@@ -52,7 +52,81 @@ def cal_farneback(prev_gray, gray, mask = None):
     rgb = cv2.cvtColor(mask, cv2.COLOR_HSV2BGR)
     
     return flow, magnitude, mask[..., 0], rgb
+
+def cal_farneback_gpu(prev_gray, frame, if_show):
+    '''
+    Objective: calculate the Farneback flow of given 2 frames and return interest points
+    input:
+        prev_gray: last frame in gray-scale
+        gray: current frame in gray-scale
+        mask(temp): input the mask for drawing line, but might not use it 
+    Output:
+        flow: doesn't use it at this moment, might remove it later
+        magnitude: the magnitude for the given 2 frames, for thresholding the pixels
+        mask[..., 0]: it's actually the angle, for building the descriptor
+        rgb: for visualizing the flow, not use at this moment
+    '''
+    # set the frame to gpu
+    gpu_previous = cv2.cuda_GpuMat()
+    gpu_previous.upload(prev_gray)
     
+    gpu_frame = cv2.cuda_GpuMat()
+    gpu_frame.upload(frame)
+    gpu_current = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY)
+
+    gpu_flow = cv2.cuda_FarnebackOpticalFlow.create(
+        1, 0.03, False, 4, 3, 5, 1.2, 0,
+    )
+
+    # calculate optical flow
+    gpu_flow = cv2.cuda_FarnebackOpticalFlow.calc(
+        gpu_flow, gpu_previous, gpu_current, None,
+    )
+ 
+    gpu_flow_x = cv2.cuda_GpuMat(gpu_flow.size(), cv2.CV_32FC1)
+    gpu_flow_y = cv2.cuda_GpuMat(gpu_flow.size(), cv2.CV_32FC1)
+    cv2.cuda.split(gpu_flow, [gpu_flow_x, gpu_flow_y])
+    # convert from cartesian to polar coordinates to get magnitude and angle
+    gpu_magnitude, gpu_angle = cv2.cuda.cartToPolar(
+        gpu_flow_x, gpu_flow_y, angleInDegrees=True,
+    )
+
+    # get angle of optical flow
+    angle = gpu_angle.download()
+    angle[np.where(angle>=180)] -= 180
+#    angle *= (1 / 360.0) * (180 / 255.0)
+    
+    magnitude = gpu_magnitude.download()
+    
+    if if_show:
+        # create gpu_hsv output for optical flow
+        gpu_hsv = cv2.cuda_GpuMat(gpu_frame.size(), cv2.CV_32FC3)
+        gpu_hsv_8u = cv2.cuda_GpuMat(gpu_frame.size(), cv2.CV_8UC3)
+        gpu_h = cv2.cuda_GpuMat(gpu_frame.size(), cv2.CV_32FC1)
+        gpu_s = cv2.cuda_GpuMat(gpu_frame.size(), cv2.CV_32FC1)
+        gpu_v = cv2.cuda_GpuMat(gpu_frame.size(), cv2.CV_32FC1)
+        gpu_s.upload(np.ones_like(prev_gray, np.float32))
+    
+        # set value to normalized magnitude from 0 to 1
+        gpu_v = cv2.cuda.normalize(gpu_magnitude, 0.0, 1.0, cv2.NORM_MINMAX, -1)
+        # set hue according to the angle of optical flow
+        gpu_h.upload(angle)
+        
+        # merge h,s,v channels
+        cv2.cuda.merge([gpu_h, gpu_s, gpu_v], gpu_hsv)
+        
+        # multiply each pixel value to 255
+        gpu_hsv.convertTo(cv2.CV_8U, 255.0, gpu_hsv_8u, 0.0)
+        
+        # convert hsv to bgr
+        gpu_bgr = cv2.cuda.cvtColor(gpu_hsv_8u, cv2.COLOR_HSV2BGR)
+        # send result from GPU back to CPU
+        bgr = gpu_bgr.download()
+    else: 
+        bgr = None
+        
+    return magnitude, angle, bgr
+       
 
 def get_interest_pixel(magnitude):
     '''
@@ -72,9 +146,9 @@ def get_interest_pixel(magnitude):
     non_zero_pixel = np.where(mag != 0)
     
     return np.c_[non_zero_pixel[0].reshape(-1,1), non_zero_pixel[1].reshape(-1,1)].reshape(-1,1,2).astype('float32')
+
  
 def cal_klt(prev_pts, prev_gray, gray, mask):
-
       
     '''
     Objective: calculate the KLT flow of given 2 frames and return interest points
@@ -138,7 +212,7 @@ def get_rectangle(x, y, gray, size = 12):
         gray: the frame to get interest point from
         size: the length of the rectangle
     Output:
-        minimum x, y and maximum x, y 
+        [min_x, min_y, max_x, max_y] 
     '''
     x_min = x - int(size/2)
     x_max = x + int(size/2)
@@ -153,13 +227,13 @@ def get_rectangle(x, y, gray, size = 12):
 
 def cal_hist(rectangle, angle, bins_num = 8):
     '''
-    Objective: calculate the histogram of the orientation of the given rectangle region
+    Objective: calculate the histogram of the dominant orientation around an ip
     input:
         rectangle: output from "get_rectangle"
         angle: the array of angle calculated from Farneback flow "cal_farneback"
 
     Output:
-        (size of rectangle)**2 * (bin size); EX: 12*12*8
+        ex: if its 8-bins, the dominant orientation is 60, return [0,0,1,0,0,0,0,0]
     '''
     
     low, high, interval = 0, 180, 180/bins_num
@@ -184,7 +258,7 @@ def cal_hist(rectangle, angle, bins_num = 8):
 def categorize_by_bin(angle, low, high, interval, if_right = False):
 
     '''
-    Objective: sort the orientation of the flow points to 9 direction (0, 180, 20)
+    Objective: sort the orientation of the flow points to n direction (0, 180, 180/n)
     input:
         angle: the angle in degree
         low: the low boundary
@@ -192,19 +266,21 @@ def categorize_by_bin(angle, low, high, interval, if_right = False):
         interval: the interval of the range
         if_right: 
     Output:
-        the category of the angle of this point (0~7)
+        the category of the angle of this point (0~(n-1))
     
     '''
     
-    
+    n = int(180/interval)
     bins = np.linspace(low, high, int(((high-low) / interval)+1))
     
-    return np.clip(np.digitize(angle, bins, right=if_right), 1, 8)-1
+    return np.clip(np.digitize(angle, bins, right=if_right), 1, n)-1
    
 
 def intersection(prev_pts, interest_pts): 
     '''
     Objective: check if the elements in the first array also in the second one
+                use case here is to check if the points extracted by klt tracker
+                is in the activatd pixels
     Input:
         2 arrays
 
@@ -219,14 +295,18 @@ def intersection(prev_pts, interest_pts):
 def cal_slic(frame, n, compactness_val):
     
     '''
-    Objective: seperate the frames into super pixels which have similar characteristic
+    Objective: build the slic mask of superpixels for frames
+                 
     Input:
         the running frames
 
     Output:
         an array shows different regions in numbers
+        i.e. [0,0,..., 2,2
+              3,3,..., 5,5
+              6,6,..., 8,8]
         
-        an arry shows regions in numbers
+    Note: this uses "fast_slic"
    
     '''
 #    slic_mask = slic(frame, n_segments=n, compactness=compactness_val)
@@ -245,7 +325,9 @@ def cal_region_mask(frame, n, compactness_val):
         an array shows different regions in numbers
         
         an arry shows regions in numbers
-    Note!!: don't know what is the best way to make sure the region for each
+    Note: this uses skimage.segmentation "slic"
+    
+        !!don't know what is the best way to make sure the region for each
             frame is in the same location, just hard code it for 9 regions at 
             this moment
             
@@ -302,7 +384,7 @@ def name_of_superpixel(sp_centers, superpixel):
         the labels for SPs
 
     Output:
-        the "name" for each superpixel, an integer
+        the "name" for each superpixel, an integer (for indexing)
    
     '''
     return np.where(sp_centers[:,0]==superpixel)[0][0]
@@ -338,7 +420,8 @@ def find_sp_center(sp_label):
 
 def sort_by_2nd(sub_li): 
     '''
-    sort by the second element
+    sort by the second element of a list, since we sort the sp centers
+    i.e. [[1,(150, 266)], ... [144,(186, 174)]]
     '''
     
     l = len(sub_li) 
@@ -351,14 +434,20 @@ def sort_by_2nd(sub_li):
     return sub_li
 
     
-#%%  
-    
-'''
-need to be updated 
-'''
+
 
 
 def check_active(pts, slic_mask, magnitude):
+    '''
+    Objective: for each ip, check if the sps it traveled are activated
+    
+    Input:
+        pts: in [x, y] format
+        slic_mask: the output from "cal_slic"
+        magnitude: the output from "cal_farneback"
+    Output:
+        a boolean shows if the sp is activated
+    '''
     
     sp = slic_mask[int(pts[0][1]), int(pts[0][0])]
     total_pixel = len(np.where(slic_mask==sp)[0])
@@ -371,8 +460,15 @@ def check_active(pts, slic_mask, magnitude):
     return if_active
 
 def check_rgs(pts, rgs_mask):
-    
-   return int(rgs_mask[int(pts[1]), int(pts[0])])
+    '''
+    Objective: for each ip, check which region it finally locates at the end of clips
+    '''
+    return int(rgs_mask[int(pts[1]), int(pts[0])])
+
+
+'''
+just some tools below, not related to the process, will divide them from the script
+'''
 
 def frames_to_avi_overlap(path_in, path_out, name_of_sub_dir = None, fps = 25, 
                           frames_in_video = 250, 
