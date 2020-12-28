@@ -6,7 +6,7 @@ Created on Thu Oct  1 11:25:55 2020
 """
 
 import os 
-os.chdir(r'C:\Users\satrf\LB_stuff\Git\hdp_modeling')
+os.chdir(r'C:\Users\satrf\LB_stuff\Git\Road_monitoring_HDPmodel')
 import cv2 
 import pandas as pd
 import tqdm
@@ -59,7 +59,7 @@ def load_obj(path, name):
     '''
     with open(path + name + '.pkl', 'rb') as f:
         return pickle.load(f)
-'''    
+  
 #%% load from pre-built desp
 files = [f for f in os.listdir(vw_path) if isfile(join(vw_path, f)) and (fnmatch.fnmatch(f, '*.pkl') and 'desp' in f)]
 final_vw_dict = dict((k, np.array([])) for k in range(TOTAL_REGIONS))  
@@ -71,7 +71,7 @@ for f in files:
             final_vw_dict[key] = part_vw[key]
         else:
             final_vw_dict[key] = np.r_[final_vw_dict[key], part_vw[key]]
-           
+            #%%
 # checking if vw is updated properly
 for key in final_vw_dict.keys():
     print('the shape for ', key, 'region is', final_vw_dict[key].shape) 
@@ -80,10 +80,10 @@ for key in final_vw_dict.keys():
 for i in range(final_vw_dict[3].shape[0]):
     t = np.sum(final_vw_dict[3][i][-1]) 
     print(t)
-'''    
+   
 #%%
 def make_descriptor(path_of_videos):
-
+#%%
     # read the files in the video path 
     sub_files = [d[0:-4] for d in os.listdir(path_of_videos) 
             if isfile(join(path_of_videos, d)) 
@@ -113,7 +113,6 @@ def make_descriptor(path_of_videos):
         frame_count = 0
     
         
-
         while cap.isOpened():
             
             # ret = a boolean return value from getting the frame, frame = the current frame being projected in the video
@@ -122,9 +121,12 @@ def make_descriptor(path_of_videos):
                 break
     
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-            flow, magnitude, angle, rgb = des.cal_farneback(prev_gray, gray, mask_farn)
             
+            #cpu
+#            _, magnitude, angle, rgb = des.cal_farneback(prev_gray, gray, mask_farn)
+            
+            #gpu
+            magnitude, angle, rgb = des.cal_farneback_gpu(prev_gray, frame, if_show)
             
             slic_sp_labels = des.cal_slic(frame, n=144, compactness_val = 52)
             sp_centers = des.find_sp_center(slic_sp_labels)
@@ -261,12 +263,12 @@ def make_descriptor(path_of_videos):
                 final_vw_dict[rgs] = np.r_[final_vw_dict[rgs], visual_words[i,:-2].reshape(1,-1)]
                                       
 
-  
+ #%% 
         cap.release()
         cv2.destroyAllWindows()
         
     return final_vw_dict
-        
+   #%%     
 '''
 the output format is 9 n * 1153 arrays
 
@@ -278,11 +280,6 @@ so the descriptor here is actually the corpus
 
 
 
-
-
-#%%
-
-save_obj(data_path, final_vw_dict, 'test_desp_100vs')
 #%%
 #def main():
 #    
