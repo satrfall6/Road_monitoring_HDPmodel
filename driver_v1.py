@@ -60,26 +60,7 @@ def load_obj(path, name):
     with open(path + name + '.pkl', 'rb') as f:
         return pickle.load(f)
   
-#%% load from pre-built desp
-files = [f for f in os.listdir(vw_path) if isfile(join(vw_path, f)) and (fnmatch.fnmatch(f, '*.pkl') and 'desp' in f)]
-final_vw_dict = dict((k, np.array([])) for k in range(TOTAL_REGIONS))  
 
-for f in files:
-    part_vw = load_obj(vw_path, f[:-4])
-    for key in part_vw.keys():
-        if len(final_vw_dict[key]) < 1:
-            final_vw_dict[key] = part_vw[key]
-        else:
-            final_vw_dict[key] = np.r_[final_vw_dict[key], part_vw[key]]
-            #%%
-# checking if vw is updated properly
-for key in final_vw_dict.keys():
-    print('the shape for ', key, 'region is', final_vw_dict[key].shape) 
-
-#np.mean(final_vw_dict[3][:,-1])
-for i in range(final_vw_dict[3].shape[0]):
-    t = np.sum(final_vw_dict[3][i][-1]) 
-    print(t)
    
 #%%
 def make_descriptor(path_of_videos):
@@ -196,6 +177,9 @@ def make_descriptor(path_of_videos):
                     superpixel = slic_sp_labels[int(visual_words[pts_idx,-1]), 
                                                 int(visual_words[pts_idx, -2])]
                     # name the corresponding sp, i.e. 0~143, since we use the index for assigning
+                    '''
+                    the way of naming might need to be modified. 
+                    '''
                     name_of_sp = des.name_of_superpixel(sp_centers, superpixel)
                     
                     # check if the sp that the ip travel throuhg at this frame is activated
@@ -268,15 +252,6 @@ def make_descriptor(path_of_videos):
         cv2.destroyAllWindows()
         
     return final_vw_dict
-   #%%     
-'''
-the output format is 9 n * 1153 arrays
-
-the format of corpus is list(list(tuple())), which is list of documents of word counts
-the format of inside list is [(word_id1, count), (word_id2, count), ...
-                              ,(word_idn, count)]
-so the descriptor here is actually the corpus
-'''
 
 
 
