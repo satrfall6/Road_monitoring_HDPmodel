@@ -17,7 +17,7 @@ import fnmatch
 import numpy as np
 import matplotlib.pyplot as plt
 import built_descriptor as des
-
+import topic_modeling as tm
 import tomotopy as tp
 
 data_path = (r'./data/')
@@ -39,8 +39,10 @@ frames_to_avi_overlap(frame_path, train_path, fps = 25,
 #sub_dir_train = [d[0:-4] for d in os.listdir(train_path) if isfile(join(train_path, d))]
 
 # hyperparams 
+
 TOTAL_REGIONS = 9
-X_SP, Y_SP, NUM_BINS = 12, 12, 8
+x_sp, y_sp, NUM_BINS = 12, 12, 8
+TOTAL_WORDS = x_sp* y_sp* NUM_BINS + 1
 
 if_show = False
 
@@ -125,7 +127,7 @@ def make_descriptor(path_of_videos):
                 
                 good_old, good_new, mask, status = des.cal_klt(interest_pts, prev_gray, gray, mask_klt)
                 # initialize the dict for temporary visual word
-                visual_words = np.zeros([good_new.shape[0], X_SP*Y_SP*NUM_BINS+3])# "+3" here are x, y, if the SP activate; 
+                visual_words = np.zeros([good_new.shape[0], TOTAL_WORDS+3])# "+3" here are x, y, if the SP activate; 
                 visual_words[0:good_new.shape[0], -2:] = good_old
 
             else:
@@ -253,14 +255,29 @@ def make_descriptor(path_of_videos):
         
     return final_vw_dict
 
-
-
+def cal_clip_score(model, clip_bow_dict, score_dict):
+    
+    clip_corpus = convert_to_nlp_format(clip_bow_dict, TOTAL_REGIONS)
+    s_clip = 0
+    w_rj = 0
+    for rgs in clip_corpus.keys():
+        if clip_corpus[rgs].shape[0] > 0:
+            r_tr = model.get_topics()
+            s_hist = score_dict[rgs]
+            clip_reconstruction = np.zeros([1, TOTAL_WORDS])
+            for doc in clip_corpus[rgs]:
+                clip_reconstruction += tm.cal_region_reconstruction(doc, model)
+            s_rj = tm.cal_confidence_score(clip_reconstruction, r_tr)
+            if s_rj > np.percentile(s_hist, 98):
+                w_rj = 1
+        s_clip += s_rj * w_rj     
+    return s_clip
 #%%
 #def main():
 #    
 #    if IF_TRAIN:
 #        make_descrptor()
-#        train()
+#        for rgs in final_vw_dict.keys()
 #   
 #    else:     
 #        test()
