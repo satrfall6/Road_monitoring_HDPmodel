@@ -25,7 +25,7 @@ frame_path = (r'./data/frames/')
 path_of_videos = train_path = (r'./data/train/')
 test_path = (r'./data/test/')
 vw_path = (r'./data/visual_words/')
-
+normal_test_path = (r'./data/normal_test/')
 '''
 # make video clips
 video_to_frames(data_path, frame_path, "junction1" , frames_in_video = 400)
@@ -64,18 +64,21 @@ def load_obj(path, name):
   
 
    
-#%%
-def make_descriptor(path_of_videos):
-#%%
-    # read the files in the video path 
-    sub_files = [d[0:-4] for d in os.listdir(path_of_videos) 
-            if isfile(join(path_of_videos, d)) 
-            and fnmatch.fnmatch(d, '*.avi')]
-    sub_files = sub_files[:]
-       
+
+def make_descriptor(path_of_videos, this_video = None):
+
+    if not this_video: 
+        # read the files in the video path 
+        sub_files = [d[0:-4] for d in os.listdir(path_of_videos) 
+                if isfile(join(path_of_videos, d)) 
+                and fnmatch.fnmatch(d, '*.avi')]
+        sub_files = sub_files[:]
+    
+    else:
+        sub_files = [this_video]
     # Initialize the final descroptor for 9 regions
     final_vw_dict = dict((k, np.array([])) for k in range(TOTAL_REGIONS))  
-    
+
     for videos in tqdm.tqdm(sub_files):
 
         cap = cv2.VideoCapture(join(path_of_videos, videos + '.avi'))
@@ -127,7 +130,7 @@ def make_descriptor(path_of_videos):
                 
                 good_old, good_new, mask, status = des.cal_klt(interest_pts, prev_gray, gray, mask_klt)
                 # initialize the dict for temporary visual word
-                visual_words = np.zeros([good_new.shape[0], TOTAL_WORDS+3])# "+3" here are x, y, if the SP activate; 
+                visual_words = np.zeros([good_new.shape[0], TOTAL_WORDS+2])# "+3" here are x, y, if the SP activate; 
                 visual_words[0:good_new.shape[0], -2:] = good_old
 
             else:
@@ -181,6 +184,7 @@ def make_descriptor(path_of_videos):
                     # name the corresponding sp, i.e. 0~143, since we use the index for assigning
                     '''
                     the way of naming might need to be modified. 
+                    now use the order of the centers of SPs
                     '''
                     name_of_sp = des.name_of_superpixel(sp_centers, superpixel)
                     
@@ -233,7 +237,7 @@ def make_descriptor(path_of_videos):
 
         # only take interest point appeared more than 20 frames
         visual_words = visual_words[np.where(np.sum(visual_words[:,:-3], axis = 1)>=20)]
-        rgs_mask = des.cal_region_mask(prev_gray,  n = 9, compactness_val = 50) 
+        rgs_mask = des.cal_region_mask(prev_gray,  n = 9, compactness_val = 32) 
         ###########################################################
         
 
@@ -249,39 +253,150 @@ def make_descriptor(path_of_videos):
                 final_vw_dict[rgs] = np.r_[final_vw_dict[rgs], visual_words[i,:-2].reshape(1,-1)]
                                       
 
- #%% 
+ 
         cap.release()
         cv2.destroyAllWindows()
         
     return final_vw_dict
 
-def cal_clip_score(model, clip_bow_dict, score_dict):
-    
-    clip_corpus = convert_to_nlp_format(clip_bow_dict, TOTAL_REGIONS)
+def cal_clip_score(model_dict, clip_bow_dict, score_dict):
+    '''
+    Objective: this is to calculate clip score and compare with the distribution
+                that from "cal_region_r_and_s"
+        
+    '''
+    clip_corpus = tm.convert_to_nlp_format(clip_bow_dict, TOTAL_REGIONS)
     s_clip = 0
     w_rj = 0
+    anomalous_rgs = []
     for rgs in clip_corpus.keys():
-        if clip_corpus[rgs].shape[0] > 0:
-            r_tr = model.get_topics()
-            s_hist = score_dict[rgs]
-            clip_reconstruction = np.zeros([1, TOTAL_WORDS])
-            for doc in clip_corpus[rgs]:
-                clip_reconstruction += tm.cal_region_reconstruction(doc, model)
-            s_rj = tm.cal_confidence_score(clip_reconstruction, r_tr)
-            if s_rj > np.percentile(s_hist, 98):
-                w_rj = 1
-        s_clip += s_rj * w_rj     
-    return s_clip
+        if len(clip_corpus[rgs]) < 1:
+            continue
+        r_tr = model_dict[rgs].get_topics()
+        s_hist = score_dict[rgs]
+        clip_reconstruction = np.zeros([1, TOTAL_WORDS])
+        for doc in clip_corpus[rgs]:
+            clip_reconstruction += tm.cal_ip_reconstruction(doc, model_dict[rgs])
+        s_rj = tm.cal_confidence_score(clip_reconstruction, r_tr)
+        
+        '''
+        anomaly threshold is set here
+        '''
+        if s_rj > np.percentile(s_hist, 72):
+            w_rj = 1
+            anomalous_rgs.append(rgs)
+        s_clip += s_rj * w_rj   
+        
+    return s_clip, anomalous_rgs
+
+def visualize_anomalies(path_of_videos, video, s_clip, anomalous_rgs, s_train):
+
+
+    cap = cv2.VideoCapture(join(path_of_videos, video + '.avi'))
+    ret, frame = cap.read()
+    prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) 
+    
+    # create mask for visualization
+    anomaly_mask = np.zeros_like(frame)
+    mask_klt = np.zeros_like(frame)
+    color = (0, 255, 255)
+
+
+    feature_params = dict(maxCorners = 200, qualityLevel = 0.001, minDistance = 1, blockSize = 3)
+    prev_pts = cv2.goodFeaturesToTrack(prev_gray, mask = None, **feature_params)
+
+    # for counting which frame is being processing for each video
+    frame_count = 0
+   
+    while cap.isOpened():
+        
+        # ret = a boolean return value from getting the frame, frame = the current frame being projected in the video
+        ret, frame = cap.read()
+        if not ret:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) 
+        good_old, good_new, mask, status = des.cal_klt(prev_pts, prev_gray, gray, mask_klt)
+        
+        for i, pts in enumerate(good_old):
+            
+            if des.cal_distance(good_new[i][0],good_new[i][1],good_old[i][0],good_old[i][1]) > 0.25:
+
+                mask_klt = cv2.line(mask_klt, (good_new[i][0], good_new[i][1]), (good_old[i][0], good_old[i][1]), color, 1)
+
+        rgs_mask = des.cal_region_mask(gray,  n = 9, compactness_val = 32) 
+        
+        # assign new previos points for the klt track in the next loop
+        prev_pts = good_new.reshape(-1, 1, 2)[status == 1].reshape(-1, 1, 2)
+     
+        # Updates previous frame
+        prev_gray = gray.copy()
+        
+        for a in anomalous_rgs:
+            anomaly_mask[:,:,2][np.where(rgs_mask==a)] = 150
+            
+        # Overlays the optical flow tracks on the original frame
+        output = cv2.add(frame, anomaly_mask)
+        output = cv2.add(output, mask_klt)
+        # Opens a new window and displays the output frame
+        cv2.imshow("anomaly region" , output) 
+        if cv2.waitKey(10) & 0xFF == ord('q'):
+            break
+        
+
+    cap.release()
+    cv2.destroyAllWindows()        
 #%%
-#def main():
-#    
-#    if IF_TRAIN:
-#        make_descrptor()
-#        for rgs in final_vw_dict.keys()
-#   
-#    else:     
-#        test()
-#    
-#    if IF_VISUALIZE:
-#        
-#        visualize()
+def main():
+    
+    if IF_TRAIN:
+        final_vw_dict = make_descriptor(train_path)
+        corpus_dict = tm.convert_to_nlp_format(final_vw_dict, TOTAL_REGIONS)
+        reconstruction_dict, score_dict = tm.cal_region_r_and_s(corpus_dict, TOTAL_REGIONS)
+        model_dict = tm.topic_modeling(corpus_dict, 'hdp', TOTAL_REGIONS, 
+                   total_words = 1153, num_topics = 150)
+        
+        
+        
+        '''
+        so, according to the paper, they actually calculate the "whole" clip
+        score, need to redo it again since the final_vw_dict are calculated 
+        IP by IP
+        '''
+
+
+    else:     
+#        corpus_dict = load_obj(vw_path, 'corpus_dict')
+#        reconstruction_dict = load_obj(vw_path, 'reconstruction_dict')
+        score_dict = load_obj(vw_path, 'score_dict')        
+        model_dict = load_obj(vw_path,'model_dict_lda' )
+
+        #%%
+    sub_files = [d[0:-4] for d in os.listdir(test_path) 
+                if isfile(join(test_path, d)) 
+                and fnmatch.fnmatch(d, '*.avi')]
+    
+    
+#    sub_files = [d[0:-4] for d in os.listdir(normal_test_path) 
+#            if isfile(join(normal_test_path, d)) 
+#            and fnmatch.fnmatch(d, '*.avi')]
+    '''
+    now seems that only region 3 could detect anomaly
+    1.check the 98 percentile for each region
+    2.and the s_clip for u-turn video
+    3.split train and test data and test the score for test data
+    4.the r_tr parameter
+    '''
+    
+    temp_dict = dict()
+    for video in sub_files[:]:
+        
+        clip_bow_dict = make_descriptor(normal_test_path, video)
+        temp_dict[video] = clip_bow_dict
+        #%%
+    for video in temp_dict.keys():
+#        video = '0794'
+#        video = '2195'
+#        video = '0146'
+        s_clip, anomalous_rgs = cal_clip_score(model_dict, temp_dict[video], score_dict)
+        visualize_anomalies(test_path, video, s_clip, anomalous_rgs, s_train = None)
+
