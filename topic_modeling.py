@@ -20,14 +20,13 @@ def convert_to_nlp_format(final_vw_dict, total_regions):
     corpus_dict = dict((k, []) for k in range(total_regions))
     for key in final_vw_dict.keys():
         for doc in final_vw_dict[key]:
-            temp_doc = []
-            for i, word_count in enumerate(doc):
-                if word_count > 0:
-                    temp_doc.append((i, int(word_count)))
+            temp_doc = [(i, int(word_count)) for i, word_count in enumerate(doc)
+                                                if word_count>0]
+            
             corpus_dict[key].append(temp_doc)
     return corpus_dict
 
-def cal_region_r_and_s(corpus_dict, total_regions):
+def cal_region_r_and_s(corpus_dict, model_dict, total_regions):
     '''
     Objective: this is to calculate reconstruction and score for the base distribution
                 different from "cal_clip_score"
@@ -43,23 +42,20 @@ def cal_region_r_and_s(corpus_dict, total_regions):
         
         if len(corpus_dict[rgs]) >0:
     
-            lda_model = gensim.models.LdaModel(corpus=corpus_dict[rgs], id2word=None, 
-                                           num_topics = 150) 
-            r_region = np.array([])
-            for doc in corpus_dict[rgs]:
-                r = cal_ip_reconstruction(doc, lda_model)
-                if len(r_region) <1:
-                    r_region = r
-                else:
-                    r_region = np.r_[r_region, r]
-            reconstruction_dict[rgs] = r_region   
+#            lda_model = gensim.models.LdaModel(corpus=corpus_dict[rgs], id2word=None, 
+#                                           num_topics = 150) 
+            r_region = np.array([cal_ip_reconstruction(doc, model_dict[rgs]) 
+                                for doc in corpus_dict[rgs]
+                                ])   
+            reconstruction_dict[rgs] = r_region.reshape(r_region.shape[0], -1)
+            '''
+            r_tr test here
+            '''            
+            r_tr = model_dict[rgs].get_topics()
             
-            s_region = []
-            r_tr = lda_model.get_topics()
-            for r_j in reconstruction_dict[rgs]:
-                s_region.append(cal_confidence_score(r_j.reshape(1,-1), r_tr))
-        
-            score_dict[rgs] = s_region  
+            score_dict[rgs] = [cal_confidence_score(r_j.reshape(1,-1), r_tr) 
+                               for r_j in reconstruction_dict[rgs]
+                               ]
     return reconstruction_dict, score_dict
 
 def topic_modeling(corpus_dict, model_type, total_regions, 
