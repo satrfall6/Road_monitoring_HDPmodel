@@ -16,7 +16,7 @@ import fnmatch
 
 from os.path import join, isdir, isfile
 
-LOW_THRESHOLD = 0.65
+LOW_THRESHOLD = 0.675
 
 def cal_distance(x2, y2, x1, y1):
 
@@ -128,7 +128,7 @@ def cal_farneback_gpu(prev_gray, frame, if_show):
     return magnitude, angle, bgr
        
 
-def get_interest_pixel(magnitude):
+def get_interest_pixel(magnitude, slic_mask):
     '''
     Objective: get the pixels within the threshold based on magnitude
     input:
@@ -136,17 +136,61 @@ def get_interest_pixel(magnitude):
 
     Output:
         an array of interest points (x, y) in the shape of [n, 1, 2]
+    
+    Note: np.where in tuple(y, x) order!
     '''
+    slic_sps = list(set(slic_mask.reshape(-1)))
+    where_not_active_sp = [[(np.where(slic_mask==i)[0], np.where(slic_mask==i)[1]), True]  
+                            if check_active(magnitude, slic_mask, sp)  
+                            else [(np.where(slic_mask==i)[0], np.where(slic_mask==i)[1]), False]
+                            for i, sp in enumerate(slic_sps)                                    
+                                    ]
+    
     mag = magnitude.copy()
-
     high_threshold  = np.percentile(magnitude, 95)
+    for sp in where_not_active_sp:
+        if sp[1]:
+            total_pixel = mag[sp[0]].shape[0]
+            '''
+            set the density of sampling here
+            '''
+            random_indices = np.random.choice(total_pixel, size=int(total_pixel*0.12)
+                                              , replace=False) 
+            (x, y) = sp[0][0][random_indices], sp[0][1][random_indices]
+            mag[(x, y)] = 0
+#            pass
+        else:
+            mag[sp[0]] = 0
     mag[np.where(mag<LOW_THRESHOLD)] = 0
     mag[np.where(mag>high_threshold)] = 0
     
     non_zero_pixel = np.where(mag != 0)
     
-    return np.c_[non_zero_pixel[0].reshape(-1,1), non_zero_pixel[1].reshape(-1,1)].reshape(-1,1,2).astype('float32')
+    return np.c_[non_zero_pixel[1].reshape(-1,1), non_zero_pixel[0].reshape(-1,1)].reshape(-1,1,2).astype('float32')
 
+def check_active(magnitude, slic_mask, sp = None, pts = None,  frame = None):
+    '''
+    Objective: for each ip, check if the sps it traveled are activated
+    
+    Input:
+        pts: in [x, y] format
+        slic_mask: the output from "cal_slic"
+        magnitude: the output from "cal_farneback"
+    Output:
+        a boolean shows if the sp is activated
+    '''
+    if sp is None:
+        sp = slic_mask[min(int(pts[0][1]),frame.shape[0]-1), 
+                       min(int(pts[0][0]),frame.shape[1]-1)]
+        
+    total_pixel = len(np.where(slic_mask==sp)[0])
+    active_pixel = sum(magnitude[np.where(slic_mask==sp)]>LOW_THRESHOLD)
+    if active_pixel/total_pixel >0.4:
+        if_active = True
+    else: 
+        if_active = False
+        
+    return if_active
  
 def cal_klt(prev_pts, prev_gray, gray, mask):
       
@@ -174,8 +218,6 @@ def cal_klt(prev_pts, prev_gray, gray, mask):
     # Selects good feature points for next position
     good_new = next_pts[status == 1] #reshape(-1, 2) 
     
-
-  
     return good_old, good_new, mask, status[np.where(status==1)].reshape(-1,1)#, prev_pts
 
 def if_inbound(c_min, c_max, bound):
@@ -435,35 +477,12 @@ def sort_by_2nd(sub_li):
 
     
 
-
-
-def check_active(pts, slic_mask, magnitude):
-    '''
-    Objective: for each ip, check if the sps it traveled are activated
-    
-    Input:
-        pts: in [x, y] format
-        slic_mask: the output from "cal_slic"
-        magnitude: the output from "cal_farneback"
-    Output:
-        a boolean shows if the sp is activated
-    '''
-    
-    sp = slic_mask[int(pts[0][1]), int(pts[0][0])]
-    total_pixel = len(np.where(slic_mask==sp)[0])
-    active_pixel = sum(magnitude[np.where(slic_mask==sp)]>LOW_THRESHOLD)
-    if active_pixel/total_pixel >0.4:
-        if_active = True
-    else: 
-        if_active = False
-        
-    return if_active
-
 def check_rgs(pts, rgs_mask):
     '''
     Objective: for each ip, check which region it finally locates at the end of clips
     '''
     return int(rgs_mask[int(pts[1]), int(pts[0])])
+
 
 
 '''
