@@ -154,7 +154,7 @@ def get_interest_pixel(magnitude, slic_mask):
             '''
             set the density of sampling here
             '''
-            random_indices = np.random.choice(total_pixel, size=int(total_pixel*0.12)
+            random_indices = np.random.choice(total_pixel, size=int(total_pixel*0.05)
                                               , replace=False) 
             (x, y) = sp[0][0][random_indices], sp[0][1][random_indices]
             mag[(x, y)] = 0
@@ -278,44 +278,17 @@ def cal_hist(rectangle, angle, bins_num = 8):
         ex: if its 8-bins, the dominant orientation is 60, return [0,0,1,0,0,0,0,0]
     '''
     
-    low, high, interval = 0, 180, 180/bins_num
     
-    hist = np.array([])
-    for x in range(rectangle[0], rectangle[2]):
-        for y in range(rectangle[1], rectangle[3]):   
-            ang_idx = categorize_by_bin(angle[y, x], low, high, interval)
-            if len(hist) < 1:
-                hist = np.zeros([1,bins_num])
-                hist[...,ang_idx] += 1
-            else:
-                pts_hist = np.zeros([1,bins_num])
-                pts_hist[...,ang_idx] += 1
-#                hist = np.c_[hist, pts_hist] , modified in v1
-                hist = hist + pts_hist
-    n_bin = np.zeros([1, bins_num])
-    n_bin[0][np.where(hist==np.amax(hist))[0][0]] +=1
+    all_angle = [[angle[y, x]
+                for x in range(rectangle[0], rectangle[2])] 
+                for y in range(rectangle[1], rectangle[3])]
     
-    return n_bin
-          
-def categorize_by_bin(angle, low, high, interval, if_right = False):
+    hist, bin_edges = np.histogram(np.array(all_angle).reshape(-1), bins = bins_num)
+                                   
 
-    '''
-    Objective: sort the orientation of the flow points to n direction (0, 180, 180/n)
-    input:
-        angle: the angle in degree
-        low: the low boundary
-        high: the high boundary
-        interval: the interval of the range
-        if_right: 
-    Output:
-        the category of the angle of this point (0~(n-1))
     
-    '''
-    
-    n = int(180/interval)
-    bins = np.linspace(low, high, int(((high-low) / interval)+1))
-    
-    return np.clip(np.digitize(angle, bins, right=if_right), 1, n)-1
+    return (hist>=np.max(hist))*1
+          
    
 
 def intersection(prev_pts, interest_pts): 
@@ -449,15 +422,14 @@ def find_sp_center(sp_label):
             problem is not visually ordered, test if all the frames in similar order
    
     '''
-    sp_center_list = []
-    for sp in set(sp_label.reshape(-1)):
-        y_max = np.max(np.where(sp_label == sp)[0])
-        y_min = np.min(np.where(sp_label == sp)[0])
-        x_max = np.max(np.where(sp_label == sp)[1])
-        x_min = np.min(np.where(sp_label == sp)[1])
     
-        center = (int((y_min+y_max)/2), int((x_min+x_max)))
-        sp_center_list.append([sp, center])
+    sp_center_list = [
+            [sp, 
+          (int((np.min(np.where(sp_label == sp)[0])+np.max(np.where(sp_label == sp)[0]))/2), 
+           int((np.min(np.where(sp_label == sp)[1])+np.max(np.where(sp_label == sp)[1]))))
+          ] 
+            for sp in set(sp_label.reshape(-1))]  
+
     return np.array(sort_by_2nd(sp_center_list))
 
 def sort_by_2nd(sub_li): 
