@@ -128,7 +128,7 @@ def cal_farneback_gpu(prev_gray, frame, if_show):
     return magnitude, angle, bgr
        
 
-def get_interest_pixel(magnitude, slic_mask):
+def get_interest_pixel(magnitude, slic_mask, ratio_to_discard = 0.65):
     '''
     Objective: get the pixels within the threshold based on magnitude
     input:
@@ -149,16 +149,19 @@ def get_interest_pixel(magnitude, slic_mask):
     mag = magnitude.copy()
     high_threshold  = np.percentile(magnitude, 95)
     for sp in where_not_active_sp:
+        # if it is active pixel, set some random pixels to 0
         if sp[1]:
             total_pixel = mag[sp[0]].shape[0]
             '''
             set the density of sampling here
             '''
-            random_indices = np.random.choice(total_pixel, size=int(total_pixel*0.05)
+            random_indices = np.random.choice(total_pixel, 
+                                              size=int(total_pixel*ratio_to_discard)
                                               , replace=False) 
             (x, y) = sp[0][0][random_indices], sp[0][1][random_indices]
             mag[(x, y)] = 0
 #            pass
+        # if it is not active, set entire sp to 0
         else:
             mag[sp[0]] = 0
     mag[np.where(mag<LOW_THRESHOLD)] = 0
@@ -219,30 +222,6 @@ def cal_klt(prev_pts, prev_gray, gray, mask):
     good_new = next_pts[status == 1] #reshape(-1, 2) 
     
     return good_old, good_new, mask, status[np.where(status==1)].reshape(-1,1)#, prev_pts
-
-def if_inbound(c_min, c_max, bound):
-
-    '''
-    Objective: sometimes the interest point might be on boundary, so shift the rectangle
-    input:
-        c_min: the minimun coordinate of the rectangle
-        c_max: the maximum coordinate of the rectangle
-        bound: the bound for image size
-        
-    Output:
-        the shifted minimum and maximum of the rectangle (min, max)
-    '''
-    
-    if c_min < 0:
-        
-        c_max = c_max + (0 - c_min)
-        c_min = c_min + (0 - c_min)
-        
-    elif c_max >= bound:
-        c_min -= (c_max - bound +1)
-        c_max -= (c_max - bound +1)
-        
-    return int(c_min), int(c_max)
         
 def get_rectangle(x, y, gray, size = 12):
     
@@ -266,6 +245,29 @@ def get_rectangle(x, y, gray, size = 12):
     rectangle = [x_min, y_min, x_max, y_max]
     
     return rectangle
+
+def if_inbound(c_min, c_max, bound):
+
+    '''
+    Objective: sometimes the interest point might be on boundary, so shift the rectangle
+    input:
+        c_min: the minimun coordinate of the rectangle
+        c_max: the maximum coordinate of the rectangle
+        bound: the bound for image size
+        
+    Output:
+        the shifted minimum and maximum of the rectangle (min, max)
+    '''
+    
+    if c_min < 0:        
+        c_max = c_max + (0 - c_min)
+        c_min = c_min + (0 - c_min)
+        
+    elif c_max >= bound:
+        c_min -= (c_max - bound +1)
+        c_max -= (c_max - bound +1)
+        
+    return int(c_min), int(c_max)
 
 def cal_hist(rectangle, angle, bins_num = 8):
     '''
