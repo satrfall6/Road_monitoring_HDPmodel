@@ -8,7 +8,6 @@ Created on Thu Oct  1 11:25:55 2020
 import os 
 os.chdir(r'C:\Users\satrf\LB_stuff\Git\Road_monitoring_HDPmodel')
 import cv2 
-import pandas as pd
 import tqdm
 from os.path import join, isdir, isfile
 import pickle
@@ -18,7 +17,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import built_descriptor as des
 import topic_modeling as tm
-import tomotopy as tp
 
 
 data_path = (r'./data/')
@@ -40,17 +38,13 @@ frames_to_avi_overlap(frame_path, train_path, fps = 25,
                           frame_overlap = 25)
 '''
 
-# the list of the name of videos in the train path, 3598 clips in total
-#sub_dir_train = [d[0:-4] for d in os.listdir(train_path) if isfile(join(train_path, d))]
-
 # hyperparams 
-
 TOTAL_REGIONS = 9
 x_sp, y_sp, NUM_BINS = 12, 12, 8
 TOTAL_WORDS = x_sp* y_sp* NUM_BINS + 1
 
 IF_TRAIN = False
-if_show = True
+if_show = False
 
 # for saving and load object
 def save_obj(path, obj, name):
@@ -70,22 +64,22 @@ def load_obj(path, name):
   
 
 
-#%%
-def make_descriptor(path_of_videos, this_video = None):
-#%%
+
+def make_descriptor(path_of_videos, IF_TRAIN, this_video = None):
+
     import time
     start = time.time()
     
     if not this_video: 
-        pixel_discard = 0.5
+        pixel_discard = 0.8
         # read the files in the video path 
-        sub_files = [d[0:-4] for d in os.listdir(train_path) 
-                if isfile(join(train_path, d)) 
+        sub_files = [d[0:-4] for d in os.listdir(path_of_videos) 
+                if isfile(join(path_of_videos, d)) 
                 and fnmatch.fnmatch(d, '*.avi')]
-        sub_files = sub_files[209:210]
+        sub_files = sub_files[:]
     
     else:
-        pixel_discard = 0.85
+        pixel_discard = 0.92
         sub_files = [this_video]
     # Initialize the final descroptor for 9 regions
     final_vw_dict = dict((k, np.array([])) for k in range(TOTAL_REGIONS))  
@@ -102,9 +96,6 @@ def make_descriptor(path_of_videos, this_video = None):
         mask_farn = np.zeros_like(frame)
         mask_farn[..., 1] = 255
 
-        # Parameters for Shi-Tomasi corner detection
-#        feature_params = dict(maxCorners = 200, qualityLevel = 0.0001, minDistance = 3, blockSize = 5)
-#        prev_pts = cv2.goodFeaturesToTrack(prev_gray, mask = None, **feature_params)
 
         # for counting which frame is being processing for each video
         frame_count = 0
@@ -129,32 +120,33 @@ def make_descriptor(path_of_videos, this_video = None):
             sp_centers = des.find_sp_center(slic_sp_labels)
             
             if frame_count < 1:
+                
+                if IF_TRAIN:
                 # for the first frame, calculate the interest points from Farneback 
-                interest_pts = des.get_interest_pixel(magnitude, slic_sp_labels,
-                                                      ratio_to_discard = pixel_discard) #return interest points coordinate in the form for KLT tracker
-                if  len(interest_pts) < 1:
-                    no_motion_count +=1
-                    prev_gray = gray.copy()
-
-                    if no_motion_count >=25:
-                        break
-                    continue
+                    interest_pts = des.get_interest_pixel(magnitude, slic_sp_labels,
+                                                          ratio_to_discard = pixel_discard) #return interest points coordinate in the form for KLT tracker
+                    if len(interest_pts) < 1:
+                        no_motion_count +=1
+                        prev_gray = gray.copy()
+    
+                        if no_motion_count >=25:
+                            break
+                        continue
+                else:
+#                    interest_pts = des.get_interest_pixel(magnitude, slic_sp_labels,
+#                                      ratio_to_discard = pixel_discard) #return interest points coordinate in the form for KLT tracker
+#                    if len(interest_pts) < 1:
+                        # Parameters for Shi-Tomasi corner detection
+                        feature_params = dict(maxCorners = 200, qualityLevel = 0.0001, minDistance = 3, blockSize = 5)
+                        interest_pts = cv2.goodFeaturesToTrack(prev_gray, mask = None, **feature_params)
+    
+                        
                 '''
                 set the way to calculate interest points
                 '''
-                # find the intersection of points extract from goodFeaturesToTrack and interest point
+  
 
-#                interest_pts = des.intersection(prev_pts, interest_pts)    
-#                if len(interest_pts)<1:
-#                    continue
-#                
-#                good_old, good_new, mask, status = des.cal_klt(interest_pts, prev_gray, gray, mask_klt)
-                
-#                try:
                 good_old, good_new, mask, status = des.cal_klt(interest_pts, prev_gray, gray, mask_klt)
-#                except:
-#                    good_old, good_new, mask, status = des.cal_klt(prev_pts, prev_gray, gray, mask_klt)
-
                 
                 # initialize the dict for temporary visual word
                 visual_words = np.zeros([good_new.shape[0], TOTAL_WORDS+2])# "+3" here are x, y, if the SP activate; 
@@ -231,7 +223,7 @@ def make_descriptor(path_of_videos, this_video = None):
                     
                     # keep summing the descriptor for interest points
                     # !! should use the "name_of_sp" instead of the original "superpixel"
-                    visual_words[pts_idx, (name_of_sp-1)*NUM_BINS + 
+                    visual_words[pts_idx, name_of_sp*NUM_BINS + 
                                              np.where(dominant_ori!=0)[0][0]] += 1
 
                         
@@ -270,31 +262,33 @@ def make_descriptor(path_of_videos, this_video = None):
                       
 
         # only take interest point appeared more than 24 frames
-        visual_words = visual_words[np.where(np.sum(visual_words[:,:-3], axis = 1)>=24)]
+        try:
+            visual_words = visual_words[np.where(np.sum(visual_words[:,:-3], axis = 1)>=24)]
         
-        # calculate the region mask for locating the region of IPs
-        rgs_mask = des.cal_region_mask(last_frame,  n = 9, compactness_val = 50) 
-        ###########################################################
-        
-
-        for i in range(visual_words.shape[0]):
+            # calculate the region mask for locating the region of IPs
+            rgs_mask = des.cal_region_mask(last_frame,  n = 9, compactness_val = 50) 
+            ###########################################################
             
-            # check if the super pixel the point belongs is activated, and the region of this super pixel
-            rgs = des.check_rgs(visual_words[i, -2:], rgs_mask)
-            
-            # keep updating the final visual word dict
-            if len(final_vw_dict[rgs]) < 1:
-                final_vw_dict[rgs] = visual_words[i,:-2].reshape(1,-1)
-            else:
-                final_vw_dict[rgs] = np.r_[final_vw_dict[rgs], visual_words[i,:-2].reshape(1,-1)]
-                                      
+    
+            for i in range(visual_words.shape[0]):
+                
+                # check if the super pixel the point belongs is activated, and the region of this super pixel
+                rgs = des.check_rgs(visual_words[i, -2:], rgs_mask)
+                
+                # keep updating the final visual word dict
+                if len(final_vw_dict[rgs]) < 1:
+                    final_vw_dict[rgs] = visual_words[i,:-2].reshape(1,-1)
+                else:
+                    final_vw_dict[rgs] = np.r_[final_vw_dict[rgs], visual_words[i,:-2].reshape(1,-1)]
+        except:
+            pass                                
 
  
         cap.release()
         cv2.destroyAllWindows()
     end = time.time()
     print('total time spend is: ', end-start) 
-#%%       
+
     return final_vw_dict
 
 
@@ -329,8 +323,8 @@ def visualize_anomalies(path_of_videos, video, anomalous_rgs):
 #            _, magnitude, angle, rgb = des.cal_farneback(prev_gray, gray, mask_farn)
             magnitude, angle, rgb = des.cal_farneback_gpu(prev_gray, frame, if_show)
             interest_pts = des.get_interest_pixel(magnitude, slic_sp_labels,
-                                                  ratio_to_discard = 0.75) 
-#            rgs_mask = des.cal_region_mask(frame,  n = 9, compactness_val = 50) 
+                                                  ratio_to_discard = 0.92) 
+            rgs_mask = des.cal_region_mask(frame,  n = 9, compactness_val = 50) 
 
             try:
                 good_old, good_new, mask, status = des.cal_klt(interest_pts, prev_gray, gray, mask_klt)
@@ -342,7 +336,7 @@ def visualize_anomalies(path_of_videos, video, anomalous_rgs):
 
         for i, pts in enumerate(good_old):
             
-            if des.cal_distance(good_new[i][0],good_new[i][1],good_old[i][0],good_old[i][1]) > 0.175:
+            if des.cal_distance(good_new[i][0],good_new[i][1],good_old[i][0],good_old[i][1]) > 0.18:
 
                 mask_klt = cv2.line(mask_klt, (good_new[i][0], good_new[i][1]), (good_old[i][0], good_old[i][1]), color, 1)
 
@@ -353,7 +347,7 @@ def visualize_anomalies(path_of_videos, video, anomalous_rgs):
         # Updates previous frame
         prev_gray = gray.copy()
         frame_count +=1
-        rgs_mask = des.cal_region_mask(gray,  n = 9, compactness_val = 50) 
+        _ = des.cal_region_mask(gray,  n = 9, compactness_val = 50) 
 
         try:
             for a in anomalous_rgs:
@@ -364,7 +358,6 @@ def visualize_anomalies(path_of_videos, video, anomalous_rgs):
         # Overlays the optical flow tracks on the original frame
         output = cv2.add(frame, anomaly_mask)
         output = cv2.add(output, mask_klt)
-        cv2.imshow('dense flow', rgb)
         # Opens a new window and displays the output frame
         cv2.imshow("anomaly region" , output) 
         if cv2.waitKey(10) & 0xFF == ord('q'):
@@ -416,47 +409,58 @@ def cal_clip_score(model_dict, clip_bow_dict, score_dict, perc = 90):
     
     if IF_TRAIN:
         
-        final_vw_dict = make_descriptor(train_path)
-        save_obj(vw_path, final_vw_dict, 'final_vw_dict')
-        print('"final_vw_dict" was saved successfully!')
+#        final_vw_dict = make_descriptor(train_path)
+#        save_obj(vw_path, final_vw_dict, 'final_vw_dict')
+#        print('"final_vw_dict" was saved successfully!')
         corpus_dict = tm.convert_to_nlp_format(final_vw_dict, TOTAL_REGIONS)
-        save_obj(vw_sparse_path, corpus_dict, 'corpus_dict_3')
+        save_obj(vw_path, corpus_dict, 'corpus_dict')
         print('"corpus_dict" was saved successfully!')
 
         model_dict_hdp = tm.topic_modeling(corpus_dict, 'hdp', TOTAL_REGIONS, 
                    total_words = 1153, num_topics = 100)
-        save_obj(vw_sparse_path, model_dict_hdp, 'model_dict_hdp_3')
+        save_obj(vw_path, model_dict_hdp, 'model_dict_hdp')
         print('"model_dict_hdp" was saved successfully!')
-
+        
         reconstruction_dict_hdp, score_dict_hdp = tm.cal_region_r_and_s(corpus_dict, model_dict_hdp, TOTAL_REGIONS)
-        save_obj(vw_sparse_path, reconstruction_dict_hdp, 'reconstruction_dict_hdp_3')
-        save_obj(vw_sparse_path, score_dict_hdp, 'score_dict_hdp_3')
+        save_obj(vw_path, reconstruction_dict_hdp, 'reconstruction_dict_hdp')
+        save_obj(vw_path, score_dict_hdp, 'score_dict_hdp')
         print('"reconstruction_dict and score_dict" was saved successfully!')
 
+    
+#        model_dict_lda = tm.topic_modeling(corpus_dict, 'lda', TOTAL_REGIONS, 
+#                   total_words = 1153, num_topics = 100)
+#        save_obj(vw_path, model_dict_lda, 'model_dict_lda')
+#        print('"model_dict_lda" was saved successfully!')
+#
+#        reconstruction_dict_lda, score_dict_lda = tm.cal_region_r_and_s(corpus_dict, model_dict_lda, TOTAL_REGIONS)
+#        save_obj(vw_path, reconstruction_dict_lda, 'reconstruction_dict_lda')
+#        save_obj(vw_path, score_dict_lda, 'score_dict_lda')
+#        print('"reconstruction_dict and score_dict" was saved successfully!')
 
 
         #%%
 #    else:    
-        test_p = normal_test_path
+        test_p = test_path
         sub_files = [d[0:-4] for d in os.listdir(test_p) 
                     if isfile(join(test_p, d)) 
                     and fnmatch.fnmatch(d, '*.avi')]
-        
-        
+                
         temp_dict = dict()
         for video in sub_files[:]:
             if video not in temp_dict.keys():
-                clip_bow_dict = make_descriptor(test_p, video)
+                clip_bow_dict = make_descriptor(test_p, IF_TRAIN, video)
                 temp_dict[video] = clip_bow_dict
-        save_obj(test_p, temp_dict, 'normal_temp_dict')
 
         #%%
 
-        temp_dict = load_obj(test_path, 'dense_temp_dict') 
 #        temp_dict = load_obj(normal_test_path, 'normal_temp_dict') 
     
-        test_model = 'hdp_1'
-        path = vw_dense_path
+        test_model = 'hdp'
+        path = vw_path
+#        save_obj(path, temp_dict, 'temp_dict')
+
+        temp_dict = load_obj(path, 'temp_dict') 
+
         model_dict = load_obj(path,'model_dict_'+test_model )
         score_dict = load_obj(path, 'score_dict_'+test_model)        
     
@@ -465,7 +469,26 @@ def cal_clip_score(model_dict, clip_bow_dict, score_dict, perc = 90):
             
     
             s_clip, anomalous_rgs = cal_clip_score(model_dict, temp_dict[video],
-                                                   score_dict, perc=88)
+                                                   score_dict, perc=10)
             print('video', video, 'score is: ', s_clip)
             visualize_anomalies(test_path, video, anomalous_rgs)
+
+#%%
+'''
+'0634' = 0.029
+'0795' = 0.50
+rgs8
+95 perc = 0.09
+80 = 0.06
+50 = 0.15
+#################
+
+'0438' = 0.08
+rgs3
+
+95 perc = 0.0197
+80 = 0.0118
+50 = 0.0085
+'''
+
 
